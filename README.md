@@ -53,3 +53,21 @@ cmake -S . -B build -DMETACRYPT_BUILD_EXAMPLES=ON -DMETACRYPT_BUILD_TESTS=ON
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
+
+## Tests
+
+The repository includes a dependency-free test runner in `tests/test_cases.cpp`.
+
+Covered cases:
+
+- password envelope roundtrip;
+- envelope metadata inspection;
+- wrong password rejection;
+- wrong AAD rejection;
+- ciphertext tamper rejection;
+- trailing byte rejection;
+- base64url roundtrip;
+- malformed base64url rejection;
+- direct 256-bit key roundtrip;
+- direct-key envelope rejection in password mode;
+- low PBKDF2 iteration rejection.

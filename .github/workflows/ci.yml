@@ -13,3 +13,4 @@ jobs:
       - run: cmake --build build --config Release
       - run: ctest --test-dir build -C Release --output-on-failure
       - run: .\build\Release\metacrypt-roundtrip.exe
+      - run: .\build\Release\metacrypt-inspect.exe
