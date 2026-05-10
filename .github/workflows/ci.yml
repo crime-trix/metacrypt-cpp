@@ -1,0 +1,15 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -B build -DMETACRYPT_BUILD_EXAMPLES=ON -DMETACRYPT_BUILD_TESTS=ON
+      - run: cmake --build build --config Release
+      - run: ctest --test-dir build -C Release --output-on-failure
+      - run: .\build\Release\metacrypt-roundtrip.exe
