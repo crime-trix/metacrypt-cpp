@@ -21,8 +21,15 @@ int main()
         return 1;
     }
 
+    auto info = metacrypt::inspect(*sealed);
+    if (!info) {
+        std::cerr << metacrypt::to_string(info.error()) << '\n';
+        return 1;
+    }
+
     const auto token = metacrypt::base64url::encode(*sealed);
     std::cout << "token: " << token << '\n';
+    std::cout << "ciphertext bytes: " << info->ciphertext_size << '\n';
 
     auto decoded = metacrypt::base64url::decode(token);
     if (!decoded) {

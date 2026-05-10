@@ -32,11 +32,13 @@ constexpr std::array<std::byte, 4> magic{
 constexpr std::uint8_t format_version = 1;
 constexpr std::uint8_t algorithm_aes_256_gcm = 1;
 constexpr std::uint8_t kdf_pbkdf2_sha256 = 1;
-constexpr std::uint32_t default_iterations = 210'000;
+constexpr std::uint32_t minimum_iterations = 10'000;
+constexpr std::uint32_t default_iterations = 600'000;
 constexpr std::size_t salt_size = 16;
 constexpr std::size_t nonce_size = 12;
 constexpr std::size_t key_size = 32;
 constexpr std::size_t tag_size = 16;
+constexpr std::size_t header_size = 4 + 4 + 12 + salt_size + nonce_size + tag_size;
 
 enum class error_code {
     ok,
@@ -45,6 +47,7 @@ enum class error_code {
     bad_format,
     unsupported_version,
     unsupported_algorithm,
+    unsupported_flags,
     authentication_failed,
 };
 
@@ -57,6 +60,7 @@ constexpr std::string_view to_string(error_code code) noexcept
     case error_code::bad_format: return "bad MetaCrypt envelope";
     case error_code::unsupported_version: return "unsupported MetaCrypt version";
     case error_code::unsupported_algorithm: return "unsupported MetaCrypt algorithm";
+    case error_code::unsupported_flags: return "unsupported MetaCrypt flags";
     case error_code::authentication_failed: return "authentication failed";
     }
     return "unknown error";
@@ -85,6 +89,16 @@ struct options {
     std::uint32_t iterations = default_iterations;
 };
 
+struct envelope_info {
+    std::uint8_t version = 0;
+    std::uint8_t algorithm = 0;
+    std::uint8_t kdf = 0;
+    std::uint8_t flags = 0;
+    std::uint32_t iterations = 0;
+    std::uint32_t aad_size = 0;
+    std::uint32_t ciphertext_size = 0;
+};
+
 struct envelope_header {
     std::array<std::byte, 4> magic_value = magic;
     std::uint8_t version = format_version;
@@ -104,6 +118,13 @@ namespace detail {
 [[nodiscard]] inline bool nt_success(NTSTATUS status) noexcept
 {
     return status >= 0;
+}
+
+inline void secure_zero(std::span<std::byte> bytes) noexcept
+{
+    if (!bytes.empty()) {
+        ::SecureZeroMemory(bytes.data(), bytes.size());
+    }
 }
 
 class algorithm_handle {
@@ -158,6 +179,7 @@ public:
         if (handle_) {
             ::BCryptDestroyKey(handle_);
         }
+        secure_zero(object_);
     }
 
     key_handle(const key_handle&) = delete;
@@ -176,6 +198,7 @@ public:
             if (handle_) {
                 ::BCryptDestroyKey(handle_);
             }
+            secure_zero(object_);
             handle_ = other.handle_;
             object_ = std::move(other.object_);
             other.handle_ = nullptr;
@@ -255,7 +278,7 @@ inline void append_bytes(std::vector<std::byte>& out, std::span<const std::byte>
     std::span<const std::byte, salt_size> salt,
     std::uint32_t iterations)
 {
-    if (password.empty() || iterations < 10'000) {
+    if (password.empty() || iterations < minimum_iterations) {
         return error_code::invalid_argument;
     }
 
@@ -329,10 +352,19 @@ inline void append_bytes(std::vector<std::byte>& out, std::span<const std::byte>
 
 } // namespace detail
 
+[[nodiscard]] inline expected<std::array<std::byte, key_size>> random_key()
+{
+    std::array<std::byte, key_size> key{};
+    if (!detail::nt_success(::BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(key.data()), static_cast<ULONG>(key.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG))) {
+        return error_code::windows_crypto_error;
+    }
+    return key;
+}
+
 [[nodiscard]] inline std::vector<std::byte> serialize_header(const envelope_header& header)
 {
     std::vector<std::byte> out;
-    out.reserve(4 + 4 + 12 + salt_size + nonce_size + tag_size);
+    out.reserve(header_size);
     detail::append_bytes(out, header.magic_value);
     out.push_back(static_cast<std::byte>(header.version));
     out.push_back(static_cast<std::byte>(header.algorithm));
@@ -351,7 +383,7 @@ inline void append_bytes(std::vector<std::byte>& out, std::span<const std::byte>
 {
     envelope_header header;
     offset = 0;
-    if (bytes.size() < 4 + 4 + 12 + salt_size + nonce_size + tag_size) {
+    if (bytes.size() < header_size) {
         return error_code::bad_format;
     }
 
@@ -369,8 +401,12 @@ inline void append_bytes(std::vector<std::byte>& out, std::span<const std::byte>
     if (header.version != format_version) {
         return error_code::unsupported_version;
     }
-    if (header.algorithm != algorithm_aes_256_gcm || header.kdf != kdf_pbkdf2_sha256) {
+    if (header.algorithm != algorithm_aes_256_gcm ||
+        (header.kdf != kdf_pbkdf2_sha256 && header.kdf != 0)) {
         return error_code::unsupported_algorithm;
+    }
+    if (header.flags != 0) {
+        return error_code::unsupported_flags;
     }
 
     const auto iterations = detail::read_le<std::uint32_t>(bytes, offset);
@@ -395,6 +431,96 @@ inline void append_bytes(std::vector<std::byte>& out, std::span<const std::byte>
     std::memcpy(header.tag.data(), bytes.data() + offset, tag_size);
     offset += tag_size;
     return header;
+}
+
+[[nodiscard]] inline expected<envelope_info> inspect(std::span<const std::byte> envelope)
+{
+    std::size_t offset = 0;
+    auto header = parse_header(envelope, offset);
+    if (!header) {
+        return header.error();
+    }
+
+    if (offset > envelope.size() ||
+        header->aad_size > envelope.size() - offset ||
+        header->ciphertext_size > envelope.size() - offset - header->aad_size ||
+        offset + header->aad_size + header->ciphertext_size != envelope.size()) {
+        return error_code::bad_format;
+    }
+
+    return envelope_info{
+        header->version,
+        header->algorithm,
+        header->kdf,
+        header->flags,
+        header->iterations,
+        header->aad_size,
+        header->ciphertext_size,
+    };
+}
+
+[[nodiscard]] inline expected<std::vector<std::byte>> seal_with_key(
+    std::span<const std::byte> plaintext,
+    std::span<const std::byte, key_size> key,
+    std::span<const std::byte> aad = {})
+{
+    if (plaintext.size() > UINT32_MAX || aad.size() > UINT32_MAX) {
+        return error_code::invalid_argument;
+    }
+
+    auto nonce = detail::random_nonce();
+    if (!nonce) {
+        return nonce.error();
+    }
+
+    auto aes = detail::aes_gcm_algorithm();
+    if (!aes) {
+        return aes.error();
+    }
+
+    auto imported = detail::key_handle::generate(aes->get(), key);
+    if (!imported) {
+        return imported.error();
+    }
+
+    envelope_header header;
+    header.kdf = 0;
+    header.iterations = 0;
+    header.aad_size = static_cast<std::uint32_t>(aad.size());
+    header.ciphertext_size = static_cast<std::uint32_t>(plaintext.size());
+    header.nonce = *nonce;
+
+    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO auth;
+    BCRYPT_INIT_AUTH_MODE_INFO(auth);
+    auth.pbNonce = reinterpret_cast<PUCHAR>(header.nonce.data());
+    auth.cbNonce = static_cast<ULONG>(header.nonce.size());
+    auth.pbAuthData = reinterpret_cast<PUCHAR>(const_cast<std::byte*>(aad.data()));
+    auth.cbAuthData = static_cast<ULONG>(aad.size());
+    auth.pbTag = reinterpret_cast<PUCHAR>(header.tag.data());
+    auth.cbTag = static_cast<ULONG>(header.tag.size());
+
+    std::vector<std::byte> ciphertext(plaintext.size());
+    ULONG written = 0;
+    const auto status = ::BCryptEncrypt(
+        imported->get(),
+        reinterpret_cast<PUCHAR>(const_cast<std::byte*>(plaintext.data())),
+        static_cast<ULONG>(plaintext.size()),
+        &auth,
+        nullptr,
+        0,
+        reinterpret_cast<PUCHAR>(ciphertext.data()),
+        static_cast<ULONG>(ciphertext.size()),
+        &written,
+        0);
+
+    if (!detail::nt_success(status) || written != ciphertext.size()) {
+        return error_code::windows_crypto_error;
+    }
+
+    auto out = serialize_header(header);
+    detail::append_bytes(out, aad);
+    detail::append_bytes(out, ciphertext);
+    return out;
 }
 
 [[nodiscard]] inline expected<std::vector<std::byte>> seal(
@@ -427,6 +553,7 @@ inline void append_bytes(std::vector<std::byte>& out, std::span<const std::byte>
     }
 
     auto imported = detail::key_handle::generate(aes->get(), *key);
+    detail::secure_zero(std::span<std::byte, key_size>(*key));
     if (!imported) {
         return imported.error();
     }
@@ -484,8 +611,12 @@ inline void append_bytes(std::vector<std::byte>& out, std::span<const std::byte>
 
     if (offset > envelope.size() ||
         header->aad_size > envelope.size() - offset ||
-        header->ciphertext_size > envelope.size() - offset - header->aad_size) {
+        header->ciphertext_size > envelope.size() - offset - header->aad_size ||
+        offset + header->aad_size + header->ciphertext_size != envelope.size()) {
         return error_code::bad_format;
+    }
+    if (header->kdf != kdf_pbkdf2_sha256 || header->iterations < minimum_iterations) {
+        return error_code::unsupported_algorithm;
     }
 
     const auto aad = envelope.subspan(offset, header->aad_size);
@@ -510,6 +641,79 @@ inline void append_bytes(std::vector<std::byte>& out, std::span<const std::byte>
     }
 
     auto imported = detail::key_handle::generate(aes->get(), *key);
+    detail::secure_zero(std::span<std::byte, key_size>(*key));
+    if (!imported) {
+        return imported.error();
+    }
+
+    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO auth;
+    BCRYPT_INIT_AUTH_MODE_INFO(auth);
+    auth.pbNonce = reinterpret_cast<PUCHAR>(const_cast<std::byte*>(header->nonce.data()));
+    auth.cbNonce = static_cast<ULONG>(header->nonce.size());
+    auth.pbAuthData = reinterpret_cast<PUCHAR>(const_cast<std::byte*>(aad.data()));
+    auth.cbAuthData = static_cast<ULONG>(aad.size());
+    auth.pbTag = reinterpret_cast<PUCHAR>(const_cast<std::byte*>(header->tag.data()));
+    auth.cbTag = static_cast<ULONG>(header->tag.size());
+
+    std::vector<std::byte> plaintext(ciphertext.size());
+    ULONG written = 0;
+    const auto status = ::BCryptDecrypt(
+        imported->get(),
+        reinterpret_cast<PUCHAR>(const_cast<std::byte*>(ciphertext.data())),
+        static_cast<ULONG>(ciphertext.size()),
+        &auth,
+        nullptr,
+        0,
+        reinterpret_cast<PUCHAR>(plaintext.data()),
+        static_cast<ULONG>(plaintext.size()),
+        &written,
+        0);
+
+    if (!detail::nt_success(status)) {
+        return error_code::authentication_failed;
+    }
+    if (written != plaintext.size()) {
+        return error_code::windows_crypto_error;
+    }
+
+    return plaintext;
+}
+
+[[nodiscard]] inline expected<std::vector<std::byte>> open_with_key(
+    std::span<const std::byte> envelope,
+    std::span<const std::byte, key_size> key,
+    std::optional<std::span<const std::byte>> expected_aad = std::nullopt)
+{
+    std::size_t offset = 0;
+    auto header = parse_header(envelope, offset);
+    if (!header) {
+        return header.error();
+    }
+    if (header->kdf != 0 || header->iterations != 0) {
+        return error_code::unsupported_algorithm;
+    }
+    if (offset > envelope.size() ||
+        header->aad_size > envelope.size() - offset ||
+        header->ciphertext_size > envelope.size() - offset - header->aad_size ||
+        offset + header->aad_size + header->ciphertext_size != envelope.size()) {
+        return error_code::bad_format;
+    }
+
+    const auto aad = envelope.subspan(offset, header->aad_size);
+    offset += header->aad_size;
+    const auto ciphertext = envelope.subspan(offset, header->ciphertext_size);
+
+    if (expected_aad && ((*expected_aad).size() != aad.size() ||
+        !std::equal(aad.begin(), aad.end(), (*expected_aad).begin()))) {
+        return error_code::authentication_failed;
+    }
+
+    auto aes = detail::aes_gcm_algorithm();
+    if (!aes) {
+        return aes.error();
+    }
+
+    auto imported = detail::key_handle::generate(aes->get(), key);
     if (!imported) {
         return imported.error();
     }
@@ -576,6 +780,10 @@ inline constexpr char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqr
 
 [[nodiscard]] inline expected<std::vector<std::byte>> decode(std::string_view input)
 {
+    if (input.size() % 4 == 1) {
+        return error_code::bad_format;
+    }
+
     std::array<int, 256> table{};
     table.fill(-1);
     for (int i = 0; i < 64; ++i) {
@@ -596,6 +804,13 @@ inline constexpr char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqr
         if (bits >= 8) {
             bits -= 8;
             out.push_back(static_cast<std::byte>((buffer >> bits) & 0xff));
+        }
+    }
+
+    if (bits > 0) {
+        const auto mask = (1u << bits) - 1u;
+        if ((buffer & mask) != 0) {
+            return error_code::bad_format;
         }
     }
 

@@ -4,7 +4,7 @@
 
 [![ci](https://github.com/crime-trix/metacrypt-cpp/actions/workflows/ci.yml/badge.svg)](https://github.com/crime-trix/metacrypt-cpp/actions/workflows/ci.yml)
 
-MetaCrypt is intentionally public. The format is not supposed to be secret; security comes from the password/key material, random salt, random nonce, PBKDF2-HMAC-SHA256, and AES-256-GCM authentication.
+MetaCrypt is intentionally public. The format is not supposed to be secret; security comes from key material, random salt, random nonce, PBKDF2-HMAC-SHA256, and AES-256-GCM authentication.
 
 ## Envelope
 
@@ -12,7 +12,7 @@ MetaCrypt is intentionally public. The format is not supposed to be secret; secu
 magic               4 bytes   "MCR1"
 version             1 byte    1
 algorithm           1 byte    AES-256-GCM
-kdf                 1 byte    PBKDF2-HMAC-SHA256
+kdf                 1 byte    PBKDF2-HMAC-SHA256, or 0 for direct 256-bit key mode
 flags               1 byte    reserved
 iterations          u32le
 aad_size            u32le
@@ -34,11 +34,17 @@ auto decoded = metacrypt::base64url::decode(token);
 auto opened = metacrypt::open(*decoded, password, aad);
 ```
 
+`seal_with_key` and `open_with_key` are available when the caller already owns a 256-bit key and does not want password-based derivation.
+
 ## Notes
 
 - Public cryptographic formats are normal. A hidden algorithm is not a security boundary.
 - AES-GCM gives confidentiality and integrity; wrong passwords or wrong AAD fail authentication.
+- The default PBKDF2 cost is 600,000 iterations. Lower values are useful for tests, not for stored user secrets.
+- The parser rejects unknown flags, malformed base64url, and trailing bytes after the ciphertext.
 - Do not embed long-term secrets directly in binaries if the attacker controls the machine.
+
+See [SECURITY.md](SECURITY.md) for the threat model and non-goals.
 
 ## Build
 
