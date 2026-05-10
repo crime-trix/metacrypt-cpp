@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(metacrypt-cpp VERSION 0.1.0 LANGUAGES CXX)
+project(metacrypt-cpp VERSION 0.4.0 LANGUAGES CXX)
 
 option(METACRYPT_BUILD_EXAMPLES "Build examples" ${PROJECT_IS_TOP_LEVEL})
 option(METACRYPT_BUILD_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})

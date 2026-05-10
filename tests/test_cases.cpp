@@ -132,6 +132,78 @@ case_result tamper_is_rejected()
         : fail("wrong error for tampered ciphertext");
 }
 
+case_result header_salt_tamper_is_rejected()
+{
+    auto sealed = metacrypt::seal(bytes("payload"), bytes("password"), bytes("aad"), {.iterations = 25'000});
+    if (!sealed) {
+        return fail("seal failed");
+    }
+
+    (*sealed)[metacrypt::layout::salt] ^= std::byte{0x01};
+    auto opened = metacrypt::open(*sealed, bytes("password"), bytes("aad"));
+    if (opened) {
+        return fail("salt-tampered envelope decrypted");
+    }
+
+    return opened.error() == metacrypt::error_code::authentication_failed
+        ? pass()
+        : fail("wrong error for salt tamper");
+}
+
+case_result header_nonce_tamper_is_rejected()
+{
+    auto sealed = metacrypt::seal(bytes("payload"), bytes("password"), bytes("aad"), {.iterations = 25'000});
+    if (!sealed) {
+        return fail("seal failed");
+    }
+
+    (*sealed)[metacrypt::layout::nonce] ^= std::byte{0x01};
+    auto opened = metacrypt::open(*sealed, bytes("password"), bytes("aad"));
+    if (opened) {
+        return fail("nonce-tampered envelope decrypted");
+    }
+
+    return opened.error() == metacrypt::error_code::authentication_failed
+        ? pass()
+        : fail("wrong error for nonce tamper");
+}
+
+case_result header_tag_tamper_is_rejected()
+{
+    auto sealed = metacrypt::seal(bytes("payload"), bytes("password"), bytes("aad"), {.iterations = 25'000});
+    if (!sealed) {
+        return fail("seal failed");
+    }
+
+    (*sealed)[metacrypt::layout::tag] ^= std::byte{0x01};
+    auto opened = metacrypt::open(*sealed, bytes("password"), bytes("aad"));
+    if (opened) {
+        return fail("tag-tampered envelope decrypted");
+    }
+
+    return opened.error() == metacrypt::error_code::authentication_failed
+        ? pass()
+        : fail("wrong error for tag tamper");
+}
+
+case_result header_version_tamper_is_rejected()
+{
+    auto sealed = metacrypt::seal(bytes("payload"), bytes("password"), bytes("aad"), {.iterations = 25'000});
+    if (!sealed) {
+        return fail("seal failed");
+    }
+
+    (*sealed)[metacrypt::layout::version] ^= std::byte{0x7f};
+    auto opened = metacrypt::open(*sealed, bytes("password"), bytes("aad"));
+    if (opened) {
+        return fail("version-tampered envelope decrypted");
+    }
+
+    return opened.error() == metacrypt::error_code::unsupported_version
+        ? pass()
+        : fail("wrong error for version tamper");
+}
+
 case_result trailing_bytes_are_rejected()
 {
     auto sealed = metacrypt::seal(bytes("payload"), bytes("password"), bytes("aad"), {.iterations = 25'000});
@@ -253,6 +325,10 @@ int main()
         {"wrong_password_is_rejected", wrong_password_is_rejected},
         {"wrong_aad_is_rejected", wrong_aad_is_rejected},
         {"tamper_is_rejected", tamper_is_rejected},
+        {"header_salt_tamper_is_rejected", header_salt_tamper_is_rejected},
+        {"header_nonce_tamper_is_rejected", header_nonce_tamper_is_rejected},
+        {"header_tag_tamper_is_rejected", header_tag_tamper_is_rejected},
+        {"header_version_tamper_is_rejected", header_version_tamper_is_rejected},
         {"trailing_bytes_are_rejected", trailing_bytes_are_rejected},
         {"base64url_roundtrip", base64url_roundtrip},
         {"malformed_base64url_is_rejected", malformed_base64url_is_rejected},

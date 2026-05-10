@@ -10,7 +10,7 @@ MetaCrypt is intentionally public. The format is not supposed to be secret; secu
 
 ```text
 magic               4 bytes   "MCR1"
-version             1 byte    1
+version             1 byte    2
 algorithm           1 byte    AES-256-GCM
 kdf                 1 byte    PBKDF2-HMAC-SHA256, or 0 for direct 256-bit key mode
 flags               1 byte    reserved
@@ -23,6 +23,8 @@ tag                 16 bytes
 aad                 aad_size bytes
 ciphertext          ciphertext_size bytes
 ```
+
+The authentication tag covers the ciphertext, the user AAD, and the fixed envelope header with the tag field zeroed. This binds metadata such as KDF id, iteration count, salt, nonce, and sizes to the encrypted payload.
 
 ## Example
 
@@ -40,6 +42,7 @@ auto opened = metacrypt::open(*decoded, password, aad);
 
 - Public cryptographic formats are normal. A hidden algorithm is not a security boundary.
 - AES-GCM gives confidentiality and integrity; wrong passwords or wrong AAD fail authentication.
+- Envelope header metadata is authenticated as part of the AEAD associated data.
 - The default PBKDF2 cost is 600,000 iterations. Lower values are useful for tests, not for stored user secrets.
 - The parser rejects unknown flags, malformed base64url, and trailing bytes after the ciphertext.
 - Do not embed long-term secrets directly in binaries if the attacker controls the machine.
@@ -65,6 +68,10 @@ Covered cases:
 - wrong password rejection;
 - wrong AAD rejection;
 - ciphertext tamper rejection;
+- header salt tamper rejection;
+- header nonce tamper rejection;
+- authentication tag tamper rejection;
+- envelope version tamper rejection;
 - trailing byte rejection;
 - base64url roundtrip;
 - malformed base64url rejection;

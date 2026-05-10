@@ -29,7 +29,7 @@ constexpr std::array<std::byte, 4> magic{
     std::byte{'M'}, std::byte{'C'}, std::byte{'R'}, std::byte{'1'}
 };
 
-constexpr std::uint8_t format_version = 1;
+constexpr std::uint8_t format_version = 2;
 constexpr std::uint8_t algorithm_aes_256_gcm = 1;
 constexpr std::uint8_t kdf_pbkdf2_sha256 = 1;
 constexpr std::uint32_t minimum_iterations = 10'000;
@@ -39,6 +39,21 @@ constexpr std::size_t nonce_size = 12;
 constexpr std::size_t key_size = 32;
 constexpr std::size_t tag_size = 16;
 constexpr std::size_t header_size = 4 + 4 + 12 + salt_size + nonce_size + tag_size;
+
+namespace layout {
+constexpr std::size_t magic = 0;
+constexpr std::size_t version = 4;
+constexpr std::size_t algorithm = 5;
+constexpr std::size_t kdf = 6;
+constexpr std::size_t flags = 7;
+constexpr std::size_t iterations = 8;
+constexpr std::size_t aad_size = 12;
+constexpr std::size_t ciphertext_size = 16;
+constexpr std::size_t salt = 20;
+constexpr std::size_t nonce = salt + salt_size;
+constexpr std::size_t tag = nonce + nonce_size;
+constexpr std::size_t aad = tag + tag_size;
+} // namespace layout
 
 enum class error_code {
     ok,
@@ -379,6 +394,14 @@ inline void append_bytes(std::vector<std::byte>& out, std::span<const std::byte>
     return out;
 }
 
+[[nodiscard]] inline std::vector<std::byte> authenticated_data(envelope_header header, std::span<const std::byte> aad)
+{
+    header.tag = {};
+    auto data = serialize_header(header);
+    detail::append_bytes(data, aad);
+    return data;
+}
+
 [[nodiscard]] inline expected<envelope_header> parse_header(std::span<const std::byte> bytes, std::size_t& offset)
 {
     envelope_header header;
@@ -492,10 +515,11 @@ inline void append_bytes(std::vector<std::byte>& out, std::span<const std::byte>
 
     BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO auth;
     BCRYPT_INIT_AUTH_MODE_INFO(auth);
+    auto auth_data = authenticated_data(header, aad);
     auth.pbNonce = reinterpret_cast<PUCHAR>(header.nonce.data());
     auth.cbNonce = static_cast<ULONG>(header.nonce.size());
-    auth.pbAuthData = reinterpret_cast<PUCHAR>(const_cast<std::byte*>(aad.data()));
-    auth.cbAuthData = static_cast<ULONG>(aad.size());
+    auth.pbAuthData = reinterpret_cast<PUCHAR>(auth_data.data());
+    auth.cbAuthData = static_cast<ULONG>(auth_data.size());
     auth.pbTag = reinterpret_cast<PUCHAR>(header.tag.data());
     auth.cbTag = static_cast<ULONG>(header.tag.size());
 
@@ -567,10 +591,11 @@ inline void append_bytes(std::vector<std::byte>& out, std::span<const std::byte>
 
     BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO auth;
     BCRYPT_INIT_AUTH_MODE_INFO(auth);
+    auto auth_data = authenticated_data(header, aad);
     auth.pbNonce = reinterpret_cast<PUCHAR>(header.nonce.data());
     auth.cbNonce = static_cast<ULONG>(header.nonce.size());
-    auth.pbAuthData = reinterpret_cast<PUCHAR>(const_cast<std::byte*>(aad.data()));
-    auth.cbAuthData = static_cast<ULONG>(aad.size());
+    auth.pbAuthData = reinterpret_cast<PUCHAR>(auth_data.data());
+    auth.cbAuthData = static_cast<ULONG>(auth_data.size());
     auth.pbTag = reinterpret_cast<PUCHAR>(header.tag.data());
     auth.cbTag = static_cast<ULONG>(header.tag.size());
 
@@ -648,10 +673,11 @@ inline void append_bytes(std::vector<std::byte>& out, std::span<const std::byte>
 
     BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO auth;
     BCRYPT_INIT_AUTH_MODE_INFO(auth);
+    auto auth_data = authenticated_data(*header, aad);
     auth.pbNonce = reinterpret_cast<PUCHAR>(const_cast<std::byte*>(header->nonce.data()));
     auth.cbNonce = static_cast<ULONG>(header->nonce.size());
-    auth.pbAuthData = reinterpret_cast<PUCHAR>(const_cast<std::byte*>(aad.data()));
-    auth.cbAuthData = static_cast<ULONG>(aad.size());
+    auth.pbAuthData = reinterpret_cast<PUCHAR>(auth_data.data());
+    auth.cbAuthData = static_cast<ULONG>(auth_data.size());
     auth.pbTag = reinterpret_cast<PUCHAR>(const_cast<std::byte*>(header->tag.data()));
     auth.cbTag = static_cast<ULONG>(header->tag.size());
 
@@ -720,10 +746,11 @@ inline void append_bytes(std::vector<std::byte>& out, std::span<const std::byte>
 
     BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO auth;
     BCRYPT_INIT_AUTH_MODE_INFO(auth);
+    auto auth_data = authenticated_data(*header, aad);
     auth.pbNonce = reinterpret_cast<PUCHAR>(const_cast<std::byte*>(header->nonce.data()));
     auth.cbNonce = static_cast<ULONG>(header->nonce.size());
-    auth.pbAuthData = reinterpret_cast<PUCHAR>(const_cast<std::byte*>(aad.data()));
-    auth.cbAuthData = static_cast<ULONG>(aad.size());
+    auth.pbAuthData = reinterpret_cast<PUCHAR>(auth_data.data());
+    auth.cbAuthData = static_cast<ULONG>(auth_data.size());
     auth.pbTag = reinterpret_cast<PUCHAR>(const_cast<std::byte*>(header->tag.data()));
     auth.cbTag = static_cast<ULONG>(header->tag.size());
 
